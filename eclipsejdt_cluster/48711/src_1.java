@@ -1,0 +1,223 @@
+/*******************************************************************************
+ * Copyright (c) 2000, 2004 IBM Corporation and others.
+ * All rights reserved. This program and the accompanying materials 
+ * are made available under the terms of the Common Public License v1.0
+ * which accompanies this distribution, and is available at
+ * http://www.eclipse.org/legal/cpl-v10.html
+ * 
+ * Contributors:
+ *     IBM Corporation - initial API and implementation
+ *******************************************************************************/
+package org.eclipse.jdt.internal.core.search.matching;
+
+import org.eclipse.jdt.core.*;
+import org.eclipse.jdt.core.compiler.CharOperation;
+import org.eclipse.jdt.core.search.SearchPattern;
+
+public class MethodPattern extends SearchPattern {
+
+protected boolean findDeclarations;
+protected boolean findReferences;
+
+public char[] selector;
+
+public char[] declaringQualification;
+public char[] declaringSimpleName;
+
+public char[] returnQualification;
+public char[] returnSimpleName;
+
+public char[][] parameterQualifications;
+public char[][] parameterSimpleNames;
+public int parameterCount;
+
+// extra reference info
+protected IType declaringType;
+
+public static char[] createIndexKey(char[] selector, int argCount) {
+	MethodPattern pattern = new MethodPattern(R_EXACT_MATCH | R_CASE_SENSITIVE);
+	pattern.selector = selector;
+	pattern.parameterCount = argCount;
+	return pattern.encodeIndexKey();
+}
+
+public MethodPattern(
+	boolean findDeclarations,
+	boolean findReferences,
+	char[] selector, 
+	char[] declaringQualification,
+	char[] declaringSimpleName,	
+	char[] returnQualification, 
+	char[] returnSimpleName,
+	char[][] parameterQualifications, 
+	char[][] parameterSimpleNames,
+	IType declaringType,
+	int matchRule) {
+
+	this(matchRule);
+
+	this.findDeclarations = findDeclarations;
+	this.findReferences = findReferences;
+
+	this.selector = this.isCaseSensitive ? selector : CharOperation.toLowerCase(selector);
+	this.declaringQualification = this.isCaseSensitive ? declaringQualification : CharOperation.toLowerCase(declaringQualification);
+	this.declaringSimpleName = this.isCaseSensitive ? declaringSimpleName : CharOperation.toLowerCase(declaringSimpleName);
+	this.returnQualification = this.isCaseSensitive ? returnQualification : CharOperation.toLowerCase(returnQualification);
+	this.returnSimpleName = this.isCaseSensitive ? returnSimpleName : CharOperation.toLowerCase(returnSimpleName);
+	if (parameterSimpleNames != null) {
+		this.parameterCount = parameterSimpleNames.length;
+		this.parameterQualifications = new char[this.parameterCount][];
+		this.parameterSimpleNames = new char[this.parameterCount][];
+		for (int i = 0; i < this.parameterCount; i++) {
+			this.parameterQualifications[i] = this.isCaseSensitive ? parameterQualifications[i] : CharOperation.toLowerCase(parameterQualifications[i]);
+			this.parameterSimpleNames[i] = this.isCaseSensitive ? parameterSimpleNames[i] : CharOperation.toLowerCase(parameterSimpleNames[i]);
+		}
+	} else {
+		this.parameterCount = -1;
+	}
+
+	this.declaringType = declaringType;
+	this.mustResolve = mustResolve();
+}
+MethodPattern(int matchRule) {
+	super(METHOD_PATTERN, matchRule);
+}
+public void decodeIndexKey(char[] key) {
+	int size = key.length;
+	int lastSeparatorIndex = CharOperation.lastIndexOf(SEPARATOR, key);	
+
+	this.parameterCount = Integer.parseInt(new String(key, lastSeparatorIndex + 1, size - lastSeparatorIndex - 1));
+	this.selector = CharOperation.subarray(key, 0, lastSeparatorIndex);
+}
+/**
+ * Method declaration entries are encoded as 'methodDecl/' selector '/' Arity
+ * e.g. 'methodDecl/X/0'
+ *
+ * Method reference entries are encoded as 'methodRef/' selector '/' Arity
+ * e.g. 'methodRef/X/0'
+ */
+public char[] encodeIndexKey() {
+	// will have a common pattern in the new story
+	if (this.isCaseSensitive && this.selector != null) {
+		switch(this.matchMode) {
+			case EXACT_MATCH :
+				int arity = this.parameterCount;
+				if (arity >= 0) {
+					char[] countChars = arity < 10 ? COUNTS[arity] : ("/" + String.valueOf(arity)).toCharArray(); //$NON-NLS-1$
+					return CharOperation.concat(this.selector, countChars);
+				}
+			case PREFIX_MATCH :
+				return this.selector;
+			case PATTERN_MATCH :
+				int starPos = CharOperation.indexOf('*', this.selector);
+				switch(starPos) {
+					case -1 :
+						return this.selector;
+					default : 
+						char[] result = new char[starPos];
+						System.arraycopy(this.selector, 0, result, 0, starPos);
+						return result;
+					case 0 : // fall through
+				}
+		}
+	}
+	return CharOperation.NO_CHAR; // find them all
+}
+public SearchPattern getBlankPattern() {
+	return new MethodPattern(R_EXACT_MATCH | R_CASE_SENSITIVE);
+}
+public char[][] getMatchCategories() {
+	if (this.findReferences)
+		if (this.findDeclarations) 
+			return new char[][] {METHOD_REF, METHOD_DECL};
+		else
+			return new char[][] {METHOD_REF};
+	else if (this.findDeclarations)
+		return new char[][] {METHOD_DECL};
+	return CharOperation.NO_CHAR_CHAR;
+}
+public boolean isPolymorphicSearch() {
+	return this.findReferences;
+}
+public boolean matchesDecodedPattern(SearchPattern decodedPattern) {
+	MethodPattern pattern = (MethodPattern) decodedPattern;
+	if (this.parameterCount != -1 && this.parameterCount != pattern.parameterCount) return false;
+
+	return matchesName(this.selector, pattern.selector);
+}
+/**
+ * Returns whether a method declaration or message send must be resolved to 
+ * find out if this method pattern matches it.
+ */
+protected boolean mustResolve() {
+	// declaring type 
+	// If declaring type is specified - even with simple name - always resolves 
+	// (see MethodPattern.matchLevel)
+	if (declaringSimpleName != null || declaringQualification != null) return true;
+
+	// return type
+	// If return type is specified - even with simple name - always resolves 
+	// (see MethodPattern.matchLevel)
+	if (returnSimpleName != null || returnQualification != null) return true;
+
+	// parameter types
+	if (parameterSimpleNames != null)
+		for (int i = 0, max = parameterSimpleNames.length; i < max; i++)
+			if (parameterQualifications[i] != null) return true;
+	return false;
+}
+public String toString() {
+	StringBuffer buffer = new StringBuffer(20);
+	if (this.findDeclarations) {
+		buffer.append(this.findReferences
+			? "MethodCombinedPattern: " //$NON-NLS-1$
+			: "MethodDeclarationPattern: "); //$NON-NLS-1$
+	} else {
+		buffer.append("MethodReferencePattern: "); //$NON-NLS-1$
+	}
+	if (declaringQualification != null)
+		buffer.append(declaringQualification).append('.');
+	if (declaringSimpleName != null) 
+		buffer.append(declaringSimpleName).append('.');
+	else if (declaringQualification != null)
+		buffer.append("*."); //$NON-NLS-1$
+
+	if (selector != null)
+		buffer.append(selector);
+	else
+		buffer.append("*"); //$NON-NLS-1$
+	buffer.append('(');
+	if (parameterSimpleNames == null) {
+		buffer.append("..."); //$NON-NLS-1$
+	} else {
+		for (int i = 0, max = parameterSimpleNames.length; i < max; i++) {
+			if (i > 0) buffer.append(", "); //$NON-NLS-1$
+			if (parameterQualifications[i] != null) buffer.append(parameterQualifications[i]).append('.');
+			if (parameterSimpleNames[i] == null) buffer.append('*'); else buffer.append(parameterSimpleNames[i]);
+		}
+	}
+	buffer.append(')');
+	if (returnQualification != null) 
+		buffer.append(" --> ").append(returnQualification).append('.'); //$NON-NLS-1$
+	else if (returnSimpleName != null)
+		buffer.append(" --> "); //$NON-NLS-1$
+	if (returnSimpleName != null) 
+		buffer.append(returnSimpleName);
+	else if (returnQualification != null)
+		buffer.append("*"); //$NON-NLS-1$
+	buffer.append(", "); //$NON-NLS-1$
+	switch(this.matchMode) {
+		case EXACT_MATCH : 
+			buffer.append("exact match, "); //$NON-NLS-1$
+			break;
+		case PREFIX_MATCH :
+			buffer.append("prefix match, "); //$NON-NLS-1$
+			break;
+		case PATTERN_MATCH :
+			buffer.append("pattern match, "); //$NON-NLS-1$
+			break;
+	}
+	buffer.append(this.isCaseSensitive ? "case sensitive" : "case insensitive"); //$NON-NLS-1$ //$NON-NLS-2$
+	return buffer.toString();
+}
+}

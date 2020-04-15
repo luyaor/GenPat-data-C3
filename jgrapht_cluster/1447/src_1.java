@@ -1,0 +1,253 @@
+/* ==========================================
+ * JGraphT : a free Java graph-theory library
+ * ==========================================
+ *
+ * Project Info:  http://jgrapht.sourceforge.net/
+ * Project Creator:  Barak Naveh (http://sourceforge.net/users/barak_naveh)
+ *
+ * (C) Copyright 2003-2008, by Barak Naveh and Contributors.
+ *
+ * This program and the accompanying materials are dual-licensed under
+ * either
+ *
+ * (a) the terms of the GNU Lesser General Public License version 2.1
+ * as published by the Free Software Foundation, or (at your option) any
+ * later version.
+ *
+ * or (per the licensee's choosing)
+ *
+ * (b) the terms of the Eclipse Public License v1.0 as published by
+ * the Eclipse Foundation.
+ */
+/* -------------------------
+ * GraphOrdering.java
+ * -------------------------
+ * (C) Copyright 2015, by Fabian Späh and Contributors.
+ *
+ * Original Author:  Fabian Späh
+ * Contributor(s):   Rita Dobler
+ *
+ * $Id$
+ *
+ * Changes
+ * -------
+ * 20-Jun-2015 : Initial revision (FS);
+ *
+ */
+package org.jgrapht.alg.isomorphism;
+
+import org.jgrapht.Graph;
+import org.jgrapht.DirectedGraph;
+
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+
+
+/**
+ * This class represents the order on the graph vertices. There are also some
+ * helper-functions for receiving outgoing/incoming edges, etc.
+ * 
+ * @author Fabian Späh
+ * 
+ * @param <V> the type of the vertices
+ * @param <E> the type of the edges
+ */
+
+public class GraphOrdering<V, E>
+{
+
+    private Graph<V, E>     graph;
+
+    private Map<V, Integer> mapVertexToOrder;
+    private Object[]        mapOrderToVertex;
+    private int             vertexCount;
+
+    private int[][]         outgoingEdges;
+    private int[][]         incomingEdges;
+
+    private boolean         cacheEdges;
+
+
+    /**
+     * @param graph the graph to be ordered
+     * @param orderByDegree should the vertices be ordered by their degree. This
+     *        speeds up the VF2 algorithm.
+     */
+    public GraphOrdering(Graph<V, E> graph,
+                         boolean orderByDegree,
+                         boolean cacheEdges) {
+        this.graph      = graph;
+        this.cacheEdges = cacheEdges;
+
+        List<V> vertexSet = new ArrayList<V>(graph.vertexSet());
+        if (orderByDegree)
+            java.util.Collections.sort(vertexSet,
+                            new GeneralVertexDegreeComparator<V>(graph));
+
+        vertexCount      = vertexSet.size();
+        mapVertexToOrder = new HashMap<V, Integer>();
+        mapOrderToVertex = new Object[vertexCount];
+
+        outgoingEdges    = new int[vertexCount][];
+        incomingEdges    = new int[vertexCount][];
+
+        Integer i = 0;
+        for (V vertex : vertexSet) {
+            mapVertexToOrder.put(vertex, i);
+            mapOrderToVertex[i] = vertex;
+
+            outgoingEdges[i]   = null;
+            incomingEdges[i++] = null;
+        }
+    }
+
+
+    /**
+     * @param graph the graph to be ordered
+     */
+    public GraphOrdering(Graph<V, E> graph) {
+        this(graph, false, true);
+    }
+
+    /**
+     * @return returns the number of vertices in the graph.
+     */
+    public int getVertexCount() {
+        return this.vertexCount;
+    }
+
+    /**
+     * @param vertexNumber the number which identifies the vertex v in this
+     *        order.
+     * @return the identifying numbers of all vertices which are connected to v
+     *         by an edge outgoing from v.
+     */
+    public int[] getOutEdges(int vertexNumber) {
+        if (cacheEdges && outgoingEdges[vertexNumber] != null)
+            return outgoingEdges[vertexNumber];
+
+        V v = getVertex(vertexNumber);
+        Set<E> edgeSet = null;
+
+        if (graph instanceof DirectedGraph<?, ?>)
+            edgeSet = ((DirectedGraph<V, E>) graph).outgoingEdgesOf(v);
+        else
+            edgeSet = graph.edgesOf(v);
+
+        int[] vertexArray = new int[edgeSet.size()];
+        int i = 0;
+
+        for (E edge : edgeSet) {
+            V source = graph.getEdgeSource(edge),
+              target = graph.getEdgeTarget(edge);
+            vertexArray[i++] =
+                mapVertexToOrder.get(source.equals(v) ? target : source);
+        }
+
+        return outgoingEdges[vertexNumber] = vertexArray;
+    }
+
+    /**
+     * @param vertexNumber the number which identifies the vertex v in this
+     *        order.
+     * @return the identifying numbers of all vertices which are connected to v
+     *         by an edge incoming to v.
+     */
+    public int[] getInEdges(int vertexNumber) {
+        if (cacheEdges && incomingEdges[vertexNumber] != null)
+            return incomingEdges[vertexNumber];
+
+        V v            = getVertex(vertexNumber);
+        Set<E> edgeSet = null;
+
+        if (graph instanceof DirectedGraph<?, ?>)
+            edgeSet = ((DirectedGraph<V, E>) graph).incomingEdgesOf(v);
+        else
+            edgeSet = graph.edgesOf(v);
+
+        int[] vertexArray = new int[edgeSet.size()];
+        int i             = 0;
+
+        for (E edge : edgeSet) {
+            V source = graph.getEdgeSource(edge),
+              target = graph.getEdgeTarget(edge);
+            vertexArray[i++] =
+                mapVertexToOrder.get(source.equals(v) ? target : source);
+        }
+
+        return incomingEdges[vertexNumber] = vertexArray;
+    }
+
+    /**
+     * @param v1Number the number of the first vertex v1
+     * @param v2Number the number of the second vertex v2
+     * @return exists the edge from v1 to v2
+     */
+    public boolean hasEdge(int v1Number, int v2Number) {
+        V v1 = getVertex(v1Number),
+          v2 = getVertex(v2Number);
+
+        return graph.containsEdge(v1, v2);
+    }
+
+    /**
+     * be careful: there's no check for a invalid vertexNumber
+     * 
+     * @param vertexNumber the number identifying the vertex v
+     * @return v
+     */
+    @SuppressWarnings("unchecked")
+    public V getVertex(int vertexNumber) {
+        return (V)mapOrderToVertex[vertexNumber];
+    }
+
+    /**
+     * @param v1Number the number identifying the vertex v1
+     * @param v2Number the number identifying the vertex v2
+     * @return the edge from v1 to v2
+     */
+    public E getEdge(int v1Number, int v2Number) {
+        V v1 = getVertex(v1Number), v2 = getVertex(v2Number);
+
+        return graph.getEdge(v1, v2);
+    }
+
+    public int getVertexNumber(V v) {
+        return mapVertexToOrder.get(v).intValue();
+    }
+
+    public int[] getEdgeNumbers(E e) {
+        V v1 = graph.getEdgeSource(e), v2 = graph.getEdgeTarget(e);
+
+        int[] edge = new int[2];
+        edge[0] = mapVertexToOrder.get(v1);
+        edge[1] = mapVertexToOrder.get(v2);
+
+        return edge;
+    }
+
+    public Graph<V, E> getGraph() {
+        return graph;
+    }
+
+
+    private static class GeneralVertexDegreeComparator<V2>
+        implements Comparator<V2>
+    {
+        private Graph<V2,?> graph;
+
+        GeneralVertexDegreeComparator(Graph<V2,?> graph)  {
+            this.graph = graph;
+        }
+
+        @Override
+        public int compare(V2 v1, V2 v2) {
+            return graph.edgesOf(v1).size() - graph.edgesOf(v2).size();
+        }
+    }
+
+}

@@ -1,0 +1,175 @@
+/*******************************************************************************
+ * Copyright (c) 2000, 2001, 2002 International Business Machines Corp. and others.
+ * All rights reserved. This program and the accompanying materials 
+ * are made available under the terms of the Common Public License v0.5 
+ * which accompanies this distribution, and is available at
+ * http://www.eclipse.org/legal/cpl-v05.html
+ * 
+ * Contributors:
+ *     IBM Corporation - initial API and implementation
+ ******************************************************************************/
+package org.eclipse.jdt.internal.core.search.indexing;
+
+import java.io.IOException;
+import java.util.Enumeration;
+import java.util.Hashtable;
+
+import org.eclipse.core.resources.IFile;
+import org.eclipse.core.resources.IProject;
+import org.eclipse.core.resources.IResource;
+import org.eclipse.core.resources.IResourceVisitor;
+import org.eclipse.core.resources.IWorkspaceRoot;
+import org.eclipse.core.runtime.CoreException;
+import org.eclipse.core.runtime.IPath;
+import org.eclipse.core.runtime.IProgressMonitor;
+import org.eclipse.jdt.core.IClasspathEntry;
+import org.eclipse.jdt.core.JavaCore;
+import org.eclipse.jdt.internal.core.ClasspathEntry;
+import org.eclipse.jdt.internal.core.Util;
+import org.eclipse.jdt.internal.core.index.IIndex;
+import org.eclipse.jdt.internal.core.index.IQueryResult;
+import org.eclipse.jdt.internal.core.index.impl.IFileDocument;
+import org.eclipse.jdt.internal.core.search.processing.JobManager;
+
+public class IndexAllProject extends IndexRequest {
+	IProject project;
+	IndexManager manager;
+
+	public IndexAllProject(IProject project, IndexManager manager) {
+		this.project = project;
+		this.manager = manager;
+	}
+	public boolean belongsTo(String jobFamily) {
+		return jobFamily.equals(this.project.getName());
+	}
+	public boolean equals(Object o) {
+		if (o instanceof IndexAllProject)
+			return this.project.equals(((IndexAllProject) o).project);
+		return false;
+	}
+	/**
+	 * Ensure consistency of a project index. Need to walk all nested resources,
+	 * and discover resources which have either been changed, added or deleted
+	 * since the index was produced.
+	 */
+	public boolean execute(IProgressMonitor progressMonitor) {
+
+		if (progressMonitor != null && progressMonitor.isCanceled()) return true;
+		if (!project.isAccessible()) return true; // nothing to do
+
+		IPath projectPath = this.project.getFullPath();
+		IIndex index = this.manager.getIndex(projectPath, true, /*reuse index file*/ true /*create if none*/);
+		if (index == null) return true;
+		ReadWriteMonitor monitor = this.manager.getMonitorFor(index);
+		if (monitor == null) return true; // index got deleted since acquired
+
+		try {
+			monitor.enterRead(); // ask permission to read
+			saveIfNecessary(index, monitor);
+
+			IQueryResult[] results = index.queryInDocumentNames(""); // all file names //$NON-NLS-1$
+			int max = results == null ? 0 : results.length;
+			final Hashtable indexedFileNames = new Hashtable(100);
+			final String OK = "OK"; //$NON-NLS-1$
+			final String DELETED = "DELETED"; //$NON-NLS-1$
+			for (int i = 0; i < max; i++)
+				indexedFileNames.put(results[i].getPath(), DELETED);
+			final long indexLastModified = max == 0 ? 0L : index.getIndexFile().lastModified();
+
+			IClasspathEntry[] entries = JavaCore.create(this.project).getRawClasspath();
+			IWorkspaceRoot root = this.project.getWorkspace().getRoot();
+			for (int i = 0, length = entries.length; i < length; i++) {
+				if (this.isCancelled) return false;
+
+				IClasspathEntry entry = entries[i];
+				if ((entry.getEntryKind() == IClasspathEntry.CPE_SOURCE)) { // Index only source folders. Libraries are done as a separate job
+					IResource sourceFolder = root.findMember(entry.getPath());
+					if (sourceFolder != null) {
+						final char[][] patterns = ((ClasspathEntry) entry).fullExclusionPatternChars();
+						if (max == 0) {
+							sourceFolder.accept(new IResourceVisitor() {
+								public boolean visit(IResource resource) {
+									if (isCancelled) return false;
+									if (resource.getType() == IResource.FILE) {
+										if (Util.isJavaFileName(resource.getName()) && resource.getLocation() != null) {
+											if (patterns == null || !Util.isExcluded(resource, patterns)) {
+												String name = new IFileDocument((IFile) resource).getName();
+												indexedFileNames.put(name, resource);
+											}
+										}
+										return false;
+									}
+									return true;
+								}
+							});
+						} else {
+							sourceFolder.accept(new IResourceVisitor() {
+								public boolean visit(IResource resource) {
+									if (isCancelled) return false;
+									if (resource.getType() == IResource.FILE) {
+										if (Util.isJavaFileName(resource.getName())) {
+											IPath path = resource.getLocation();
+											if (path != null && (patterns == null || !Util.isExcluded(resource, patterns))) {
+												String name = new IFileDocument((IFile) resource).getName();
+												indexedFileNames.put(name,
+													indexedFileNames.get(name) == null || indexLastModified < path.toFile().lastModified()
+														? (Object) resource
+														: (Object) OK);
+											}
+										}
+										return false;
+									}
+									return true;
+								}
+							});
+						}
+					}
+				}
+			}
+
+			Enumeration names = indexedFileNames.keys();
+			boolean shouldSave = false;
+			while (names.hasMoreElements()) {
+				if (this.isCancelled) return false;
+
+				String name = (String) names.nextElement();
+				Object value = indexedFileNames.get(name);
+				if (value != OK) {
+					shouldSave = true;
+					if (value == DELETED)
+						this.manager.remove(name, projectPath);
+					else
+						this.manager.addSource((IFile) value, projectPath);
+				}
+			}
+
+			// request to save index when all cus have been indexed
+			if (shouldSave)
+				this.manager.request(new SaveIndex(projectPath, manager));
+
+		} catch (CoreException e) {
+			if (JobManager.VERBOSE) {
+				JobManager.verbose("-> failed to index " + this.project + " because of the following exception:"); //$NON-NLS-1$ //$NON-NLS-2$
+				e.printStackTrace();
+			}
+			this.manager.removeIndex(projectPath);
+			return false;
+		} catch (IOException e) {
+			if (JobManager.VERBOSE) {
+				JobManager.verbose("-> failed to index " + this.project + " because of the following exception:"); //$NON-NLS-1$ //$NON-NLS-2$
+				e.printStackTrace();
+			}
+			this.manager.removeIndex(projectPath);
+			return false;
+		} finally {
+			monitor.exitRead(); // free read lock
+		}
+		return true;
+	}
+	public int hashCode() {
+		return this.project.hashCode();
+	}
+	public String toString() {
+		return "indexing project " + this.project.getFullPath(); //$NON-NLS-1$
+	}
+}

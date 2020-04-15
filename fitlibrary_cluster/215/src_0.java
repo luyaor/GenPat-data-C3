@@ -1,0 +1,83 @@
+/*
+ * Copyright (c) 2009 Rick Mugridge, www.RimuResearch.com
+ * Released under the terms of the GNU General Public License version 2 or later.
+*/
+package fitlibrary.suite;
+
+import java.io.IOException;
+
+import fit.FitServerBridge;
+import fitlibrary.dynamicVariable.DynamicVariablesRecording;
+import fitlibrary.flow.DoFlow;
+import fitlibrary.flow.GlobalScope;
+import fitlibrary.flow.ScopeStack;
+import fitlibrary.parser.lookup.ParseDelegation;
+import fitlibrary.runResults.TableListener;
+import fitlibrary.runResults.TestResults;
+import fitlibrary.runResults.TestResultsFactory;
+import fitlibrary.runtime.RuntimeContextContainer;
+import fitlibrary.table.ParseNode;
+import fitlibrary.table.Table;
+import fitlibrary.table.TableFactory;
+import fitlibrary.table.Tables;
+import fitlibrary.traverse.Traverse;
+import fitlibrary.traverse.workflow.DoTraverse;
+import fitlibrary.traverse.workflow.FlowEvaluator;
+import fitlibrary.typed.TypedObject;
+import fitlibraryGeneric.typed.GenericTypedObject;
+
+public class BatchFitLibrary implements StorytestRunner {
+	private TableListener tableListener = new TableListener(TestResultsFactory.testResults());
+	private DoFlow doFlow = wiredUpDoFlow();
+
+	public BatchFitLibrary() {
+		//
+	}
+	public BatchFitLibrary(TableListener tableListener) {
+		this.tableListener = tableListener;
+	}
+	public TestResults doStorytest(Tables theTables) {
+		ParseDelegation.clearDelegatesForNextStorytest();
+		return doTables(theTables);
+	}
+	private static DoFlow wiredUpDoFlow() {
+		FlowEvaluator flowEvaluator = new DoTraverse();
+		GlobalScope global = new GlobalScope();
+		TypedObject globalTO = new GenericTypedObject(global);
+		ScopeStack scopeStack = new ScopeStack(flowEvaluator,globalTO);
+		RuntimeContextContainer runtime = new RuntimeContextContainer(scopeStack,global);
+		runtime.setDynamicVariable(Traverse.FITNESSE_URL_KEY,FitServerBridge.FITNESSE_URL);
+		global.setRuntimeContext(runtime);
+		flowEvaluator.setRuntimeContext(runtime);
+		DoFlow doFlow2 = new DoFlow(flowEvaluator,scopeStack,runtime);
+		runtime.SetTableEvaluator(doFlow2);
+		return doFlow2;
+	}
+	public TestResults doTables(Tables theTables) {
+		tableListener.clearTestResults();
+		doFlow.runStorytest(theTables,tableListener);
+		DynamicVariablesRecording recorder = doFlow.getRuntimeContext().getDynamicVariableRecorder();
+		if (recorder.isRecording()) {
+			try {
+				recorder.write();
+			} catch (IOException e) {
+				Table errorTable = TableFactory.table(TableFactory.row("note",ParseNode.label("Problem on writing property file:")+"<hr/>"+e.getMessage()));
+				errorTable.elementAt(0).elementAt(1).error(tableListener.getTestResults());
+				theTables.add(errorTable );
+			}
+		}
+		return tableListener.getTestResults();
+	}
+	public void doTables(Tables theTables, TableListener listener) {
+		this.tableListener = listener;
+		doStorytest(theTables);
+	}
+	public void exit() {
+		doFlow.exit();
+	}
+	public static class DefaultReportage implements Reportage {
+		public void showAllReports() {
+			//
+		}
+	}
+}
